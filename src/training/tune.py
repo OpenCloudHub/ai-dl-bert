@@ -1,286 +1,279 @@
-"""Training script with Ray Tune hyperparameter optimization."""
+"""
+Simple Ray Tune + MLflow + Pytorch Lightning integration.
+"""
+
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import argparse
 
 import lightning as L
 import mlflow
+import ray
+import ray.tune
 import torch
-from pydantic_settings import BaseSettings
 from ray import tune
-from ray.air.integrations.mlflow import setup_mlflow
-from ray.tune.integration.pytorch_lightning import TuneReportCallback
-from ray.tune.schedulers import ASHAScheduler
+from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
+from torch.utils.data import DataLoader
 
 from src._utils.logging import get_logger, log_section
-from src.training.config import TRAINING_CONFIG
-from src.training.data import load_data
+from src.training.config import TRAINING_CONFIG, WORKFLOW_TAGS
+from src.training.data import load_and_prepare_data
 from src.training.model import DistilBERTClassificationModule
 
 logger = get_logger(__name__)
 
 
 # ============================================== #
-# 🔹 SECTION: Data Contract
+# Training Function
 # ============================================== #
-class WorkflowTags(BaseSettings):
-    """⚠️ Data Contract for CI/CD Workflows."""
+def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
+    """Training function for each trial."""
 
-    argo_workflow_uid: str
-    docker_image_tag: str
-    dvc_data_version: str
-
-
-WORKFLOW_TAGS = WorkflowTags()
-
-
-# ============================================== #
-# 🔹 SECTION: Training Function
-# ============================================== #
-def train_emotion_classifier(
-    config: dict,
-    parent_run_id: str,
-    train_ds,
-    val_ds,
-    num_classes: int,
-    num_epochs: int = 1,  # Reduced to 1 for faster demo
-):
-    """Training function for a single trial"""
-    # Ray's MLflow integration - handles run creation automatically
-    # TODO: Wait for fix: https://github.com/ray-project/ray/pull/58705
-    mlflow = setup_mlflow(
-        config=config,
-        tracking_uri="your_mlflow_uri",  # Or set via environment
-        experiment_name="emotion_classification",
-        rank_zero_only=True,
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+        num_workers=0,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=config["batch_size"], shuffle=False, num_workers=0
     )
 
-    # Enable autolog
-    mlflow.pytorch.autolog(log_models=False)
-
-    # Create DataLoaders
-    train_dataloader = train_ds.iter_torch_batches(batch_size=config["batch_size"])
-    val_dataloader = val_ds.iter_torch_batches(batch_size=config["batch_size"])
-
-    # Initialize model
+    # Create model
     model = DistilBERTClassificationModule(
         model_name=TRAINING_CONFIG.model_name,
         num_classes=num_classes,
         learning_rate=config["learning_rate"],
     )
 
-    # Configure Lightning trainer with Tune callback
-    trainer = L.Trainer(
-        max_epochs=num_epochs,
-        devices="auto",
-        accelerator="auto",
-        callbacks=[
-            TuneReportCallback(["val_loss", "val_acc", "val_f1"], on="validation_end")
-        ],
-        enable_progress_bar=False,
-        enable_checkpointing=True,  # Enable checkpointing to save best model
-        default_root_dir="/tmp/lightning_checkpoints",
-    )
+    # Setup MLflow child run
+    mlflow.set_tracking_uri(TRAINING_CONFIG.mlflow_tracking_uri)
+    mlflow.set_experiment(TRAINING_CONFIG.mlflow_experiment_name)
 
-    # # Setup MLflow run (WITHOUT autolog to avoid overhead)
-    # with mlflow.start_run(
-    #     run_name=f"trial_lr{config['learning_rate']:.2e}_bs{config['batch_size']}",
-    #     nested=True,
-    #     parent_run_id=parent_run_id,
-    #     tags=WORKFLOW_TAGS.model_dump(),
-    # ) as child_run:
-    #     logger.info(f"Started MLflow run {child_run.info.run_id} for trial")
-
-    #     # Enable PyTorch Lightning autologging (without model logging)
-    #     mlflow.pytorch.autolog(log_models=False)
-
-    # Train
-    trainer.fit(
-        model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
-    )
-
-
-# ============================================== #
-# 🔹 SECTION: Tune function
-# ============================================== #
-def tune_with_setup(parent_run_id: str = None):
-    """Main function to run Ray Tune hyperparameter optimization."""
-    # Load data ONCE
-    log_section("Loading Data", "📦")
-    data_version = WORKFLOW_TAGS.dvc_data_version
-    train_ds, val_ds, label2id, id2label, metadata = load_data(
-        version=data_version,
-        batch_size=32,
-    )
-    num_classes = len(label2id)
-    logger.success(f"✨ Loaded data with {num_classes} classes")
-
-    # Build config - simplified for demo
-    config = {
-        "learning_rate": tune.loguniform(1e-5, 1e-4),  # Narrower range
-        "batch_size": tune.choice([16, 32]),
-    }
-
-    # Wrap training function with data
-    trainable = tune.with_parameters(
-        train_emotion_classifier,
-        parent_run_id=parent_run_id,
-        train_ds=train_ds,
-        val_ds=val_ds,
-        num_classes=num_classes,
-        num_epochs=1,  # Just 1 epoch for demo
-    )
-
-    # Wrap with resources - allocate GPU + more CPUs for faster training
-    # This will run trials sequentially but each trial will be MUCH faster
-    trainable_with_resources = tune.with_resources(
-        trainable,
-        resources={"cpu": 4, "gpu": 0.5},  # 4 CPUs + 0.5 GPU per trial
-    )
-
-    # Configure scheduler
-    scheduler = ASHAScheduler(
-        metric="val_acc",
-        mode="max",
-        max_t=1,  # Match num_epochs
-        grace_period=1,
-        reduction_factor=2,
-    )
-
-    tuner = tune.Tuner(
-        trainable_with_resources,  # Use the resource-wrapped trainable
-        tune_config=tune.TuneConfig(
-            scheduler=scheduler,
-            num_samples=2,  # Just 2 trials for demo
-        ),
-        param_space=config,
-        run_config=tune.RunConfig(
-            name=TRAINING_CONFIG.mlflow_experiment_name,
-            stop={"training_iteration": 100},
-            checkpoint_config=tune.CheckpointConfig(
-                checkpoint_score_attribute="val_acc",
-                num_to_keep=2,
-            ),
-        ),
-    )
-
-    # Run tuning
-    log_section("Starting Ray Tune", "🔍")
-    results = tuner.fit()
-
-    return results, train_ds, val_ds, label2id, id2label
-
-
-# ============================================== #
-# 🔹 SECTION: Log Best Model
-# ============================================== #
-def log_best_model(
-    best_result,
-    train_ds,
-    label2id,
-    id2label,
-    num_classes: int,
-    parent_run_id: str,
-):
-    """Load best model checkpoint and log to MLflow with input example."""
-    log_section("Logging Best Model", "💾")
-
-    # Get best config
-    best_config = best_result.config
-    logger.info(
-        f"Best config: LR={best_config['learning_rate']:.2e}, BS={best_config['batch_size']}"
-    )
-
-    # Recreate best model
-    best_model = DistilBERTClassificationModule(
-        model_name=TRAINING_CONFIG.model_name,
-        num_classes=num_classes,
-        learning_rate=best_config["learning_rate"],
-    )
-
-    # Get single sample WITHOUT materializing whole dataset
-    # take_batch returns a dict with tensors directly
-    sample_batch = train_ds.take_batch(1)  # Just 1 row
-
-    input_example = {
-        "input_ids": sample_batch["input_ids"][:1],
-        "attention_mask": sample_batch["attention_mask"][:1],
-    }
-
-    # Log to MLflow
-    with mlflow.start_run(run_id=parent_run_id):
-        signature = mlflow.models.infer_signature(
-            model_input=input_example,
-            model_output={"predictions": torch.tensor([[0.1] * num_classes])},
+    with mlflow.start_run(
+        run_name=f"trial_lr{config['learning_rate']:.2e}",
+        nested=True,
+        tags=WORKFLOW_TAGS.model_dump(),
+    ) as run:
+        # Set parent manually (more reliable in distributed setting)
+        mlflow.MlflowClient().set_tag(
+            run.info.run_id, "mlflow.parentRunId", parent_run_id
         )
 
-        mlflow.pytorch.log_model(
-            pytorch_model=best_model,
-            artifact_path="best_model",
-            signature=signature,
-            input_example=input_example,
-            registered_model_name=TRAINING_CONFIG.mlflow_registered_model_name,
-        )
-
-        # Log label mappings as artifact
-        mlflow.log_dict(
-            {"label2id": label2id, "id2label": id2label}, "label_mappings.json"
-        )
-
-        # Log best metrics
-        mlflow.log_metrics(
+        # Log hyperparameters
+        mlflow.log_params(
             {
-                "best_val_acc": best_result.metrics.get("val_acc", 0),
-                "best_val_loss": best_result.metrics.get("val_loss", 0),
-                "best_val_f1": best_result.metrics.get("val_f1", 0),
+                "learning_rate": config["learning_rate"],
+                "batch_size": config["batch_size"],
+                "num_epochs": config["num_epochs"],
             }
         )
 
-    logger.success("✅ Best model logged to MLflow")
+        # Callback for Ray Tune
+        tune_callback = TuneReportCheckpointCallback(
+            metrics={"loss": "val_loss", "accuracy": "val_acc", "f1": "val_f1"},
+            on="validation_end",
+        )
+
+        # Trainer
+        trainer = L.Trainer(
+            max_epochs=config["num_epochs"],
+            accelerator="gpu" if torch.cuda.is_available() else "cpu",
+            devices=1,
+            callbacks=[tune_callback],
+            enable_progress_bar=True,
+            enable_checkpointing=False,
+            logger=False,
+        )
+
+        # Enable MLflow autolog
+        mlflow.pytorch.autolog(
+            log_models=False,
+            log_datasets=False,
+            log_model_signatures=False,
+            checkpoint=False,  # Ray Tune handles checkpoints
+        )
+
+        # Train
+        trainer.fit(model, train_loader, val_loader)
+
+        # Save run id to checkpoint
+        checkpoint = tune.get_checkpoint()
+        if checkpoint:
+            with checkpoint.as_directory() as checkpoint_dir:
+                run_id_file = os.path.join(checkpoint_dir, "mlflow_run_id.txt")
+                with open(run_id_file, "w") as f:
+                    f.write(run.info.run_id)
 
 
 # ============================================== #
-# 🔹 SECTION: Main Entry Point
+# Main Orchestration
 # ============================================== #
 def main():
-    """Main entry point - EXACTLY like Ray example."""
-    log_section("DistilBERT Emotion Classification - Ray Tune", "🎯")
+    """Main function."""
 
-    # Start MLflow experiment
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--num-epochs", type=int, default=2)
+    args = parser.parse_args()
+
+    log_section("Ray Tune + MLflow Hyperparameter Search", "🎯")
+    logger.info(f"DVC Version: [cyan]{WORKFLOW_TAGS.dvc_data_version}[/cyan]")
+    logger.info(f"Docker Tag: [cyan]{WORKFLOW_TAGS.docker_image_tag}[/cyan]")
+    logger.info(f"Workflow UID: [cyan]{WORKFLOW_TAGS.argo_workflow_uid}[/cyan]")
+
+    # Load data
+    train_dataset, val_dataset, label2id, id2label, num_classes = load_and_prepare_data(
+        limit=args.limit
+    )
+
+    # Setup MLflow parent run
+    log_section("Starting MLflow Experiment", "📊")
+    mlflow.set_tracking_uri(TRAINING_CONFIG.mlflow_tracking_uri)
+    mlflow.set_experiment(TRAINING_CONFIG.mlflow_experiment_name)
+
     with mlflow.start_run(
-        run_name="hyperparameter_optimization",
-        tags=WORKFLOW_TAGS.model_dump(),
+        run_name="hyperparameter_search", tags=WORKFLOW_TAGS.model_dump()
     ) as parent_run:
-        parent_run_id = parent_run.info.run_id
-        logger.info(f"Started parent MLflow run with ID: {parent_run_id}")
+        logger.info(f"Parent run ID: [yellow]{parent_run.info.run_id}[/yellow]")
 
-        # Run tuning
-        results, train_ds, val_ds, label2id, id2label = tune_with_setup(
-            parent_run_id=parent_run_id
+        # Log parent run params
+        mlflow.log_params(
+            {
+                "num_trials": 2,
+                "num_epochs": args.num_epochs,
+                "data_limit": args.limit,
+            }
         )
 
-        if not results:
-            logger.error("No results returned from tuning, run failed.")
-            return
+        # Run trials with tune.with_parameters to pass data
+        trainable = tune.with_parameters(
+            train_model,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            num_classes=num_classes,
+            parent_run_id=parent_run.info.run_id,
+        )
+
+        search_space = {
+            "learning_rate": tune.loguniform(1e-5, 5e-5),
+            "batch_size": tune.choice([16, 32]),
+            "num_epochs": args.num_epochs,
+        }
+
+        gpu_available = torch.cuda.is_available()
+        resources = {"cpu": 4, "gpu": 1 if gpu_available else 0}
+        logger.info(f"Resources per trial: [cyan]{resources}[/cyan]")
+
+        tuner = tune.Tuner(
+            tune.with_resources(trainable, resources=resources),
+            param_space=search_space,
+            tune_config=tune.TuneConfig(
+                metric="loss",
+                mode="min",
+                num_samples=4,
+            ),
+        )
+
+        log_section("Running Hyperparameter Trials", "🔍")
+        logger.info("This may take several minutes...")
+        results = tuner.fit()
+
+        # Get errors
+        if results.errors:
+            logger.error(f"Errors in Trials: {results.errors}")
+        else:
+            logger.success("✨ No errors in trials")
 
         # Get best result
-        log_section("Results", "📊")
-        best_result = results.get_best_result(metric="val_acc", mode="max")
-        logger.success("Best hyperparameters found:")
-        logger.info(f"  Learning rate: {best_result.config['learning_rate']:.2e}")
-        logger.info(f"  Batch size: {best_result.config['batch_size']}")
-        logger.success(f"  Best val_acc: {best_result.metrics.get('val_acc', 0):.4f}")
-
-        # Log best model to MLflow
-        log_best_model(
-            best_result=best_result,
-            train_ds=train_ds,
-            label2id=label2id,
-            id2label={
-                int(k): v for k, v in id2label.items()
-            },  # Ensure JSON serializable
-            num_classes=len(label2id),
-            parent_run_id=parent_run_id,
+        log_section("Best Result", "🏆")
+        best_result = results.get_best_result(metric="loss", mode="min")
+        logger.success(
+            f"Best learning rate: [green]{best_result.config['learning_rate']:.2e}[/green]"
+        )
+        logger.success(
+            f"Best batch size: [green]{best_result.config['batch_size']}[/green]"
+        )
+        logger.success(
+            f"Best val loss: [green]{best_result.metrics['loss']:.4f}[/green]"
+        )
+        logger.success(
+            f"Best val accuracy: [green]{best_result.metrics.get('accuracy', 0):.4f}[/green]"
         )
 
-    logger.success("🎉 Hyperparameter optimization complete!")
+        # Log summary to parent
+        mlflow.log_metrics(
+            {
+                "best_val_loss": best_result.metrics["loss"],
+                "best_val_acc": best_result.metrics.get("accuracy", 0),
+                "best_val_f1": best_result.metrics.get("f1", 0),
+            }
+        )
+        mlflow.log_params(
+            {
+                "best_learning_rate": best_result.config["learning_rate"],
+                "best_batch_size": best_result.config["batch_size"],
+            }
+        )
+
+    # Log best model
+    log_section("Logging Best Model", "💾")
+    if best_result.checkpoint:
+        # Get the best MLflow run ID from the checkpoint
+        with best_result.checkpoint.as_directory() as checkpoint_dir:
+            try:
+                best_mlflow_run_id_file = os.path.join(
+                    checkpoint_dir, "mlflow_run_id.txt"
+                )
+                with open(best_mlflow_run_id_file, "r") as f:
+                    best_mlflow_run_id = f.read().strip()
+                logger.info(
+                    f"Best trial MLflow run ID: [yellow]{best_mlflow_run_id}[/yellow]"
+                )
+            except FileNotFoundError:
+                logger.warning("⚠️  No MLflow run ID file found in the best checkpoint")
+                best_mlflow_run_id = None
+
+        if best_mlflow_run_id:
+            with mlflow.start_run(run_id=best_mlflow_run_id):
+                with best_result.checkpoint.as_directory() as checkpoint_dir:
+                    checkpoint_path = os.path.join(checkpoint_dir, "checkpoint")
+
+                    logger.info("Loading best model from checkpoint...")
+                    model = DistilBERTClassificationModule.load_from_checkpoint(
+                        checkpoint_path,
+                        model_name=TRAINING_CONFIG.model_name,
+                        num_classes=num_classes,
+                        learning_rate=best_result.config["learning_rate"],
+                    )
+
+                    logger.info(
+                        f"Registering model as: [cyan]{TRAINING_CONFIG.mlflow_registered_model_name}[/cyan]"
+                    )
+                    mlflow.pytorch.log_model(
+                        pytorch_model=model,
+                        artifact_path="model",
+                        registered_model_name=TRAINING_CONFIG.mlflow_registered_model_name,
+                    )
+
+                    mlflow.log_dict(
+                        {"label2id": label2id, "id2label": id2label}, "labels.json"
+                    )
+
+                    mlflow.set_tag("model_selection", "best_from_tune")
+
+                    logger.success(
+                        f"✨ Model logged to run: [yellow]{best_mlflow_run_id}[/yellow]"
+                    )
+    else:
+        logger.warning("⚠️  No checkpoint found for best result")
+
+    ray.shutdown()
+    log_section("Complete", "🎉")
+    logger.success("Hyperparameter search finished successfully!")
 
 
 if __name__ == "__main__":

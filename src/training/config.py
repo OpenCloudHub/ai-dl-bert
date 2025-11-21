@@ -9,7 +9,7 @@ class TrainingConfig(BaseSettings):
     # MLflow Configuration
     mlflow_tracking_uri: str = "http://mlflow.mlops.svc.cluster.local:5000"
     mlflow_experiment_name: str = "emotion-classification"
-    mlflow_registered_model_name: str = "distilbert-emotion"
+    mlflow_registered_model_name: str = "emotion-classifier"
 
     # DVC Configuration
     dvc_repo: str = "https://github.com/OpenCloudHub/data-registry"
@@ -28,4 +28,17 @@ class TrainingConfig(BaseSettings):
         env_prefix = ""
 
 
+# ============================================== #
+# Data Contract - FROM ENV
+# ============================================== #
+class WorkflowTags(BaseSettings):
+    argo_workflow_uid: str = "local-dev"
+    docker_image_tag: str = "local"
+    dvc_data_version: str = "emotion-v0.3.0"
+
+    class Config:
+        env_prefix = ""
+
+
+WORKFLOW_TAGS = WorkflowTags()
 TRAINING_CONFIG = TrainingConfig()
