@@ -190,7 +190,7 @@ ______________________________________________________________________
    ```bash
    mlflow server \
      --host 0.0.0.0 \
-     --port 8081 \
+     --port 5000 \
      --backend-store-uri file:./output/mlruns \
      --default-artifact-root file:./output/mlruns/artifacts
    ```
@@ -224,7 +224,7 @@ ______________________________________________________________________
 ```bash
 RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
   --working-dir . \
-  -- python src/training/tune.py --num-epochs 3
+  -- python src/training/tune.py --num-epochs 5 --limit 5000
 ```
 
 **What happens:**

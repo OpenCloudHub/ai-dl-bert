@@ -7,7 +7,7 @@
 	},
 	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace/project,type=bind",
 	"workspaceFolder": "/workspace/project",
-	"runArgs": ["--env-file", "./.env", "--network", "host", "--gpus", "all"],
+	"runArgs": ["--network", "host", "--gpus", "all"],
 	"postCreateCommand": "uv sync --all-extras && pre-commit run --all",
 	"features": {
 		"ghcr.io/devcontainers/features/github-cli:1": {},

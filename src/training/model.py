@@ -10,11 +10,14 @@ from transformers import DistilBertForSequenceClassification
 
 
 class DistilBERTClassificationModule(L.LightningModule):
+    """Simple PyTorch Lightning Module for DistilBERT Emotion Classification."""
+
     def __init__(
         self,
         model_name: str,
         num_classes: int,
         learning_rate: float = 2e-5,
+        weight_decay: float = 0.01,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -33,6 +36,7 @@ class DistilBERTClassificationModule(L.LightningModule):
         )
         self.val_metrics = self.train_metrics.clone(prefix="val_")
 
+        # Setup loss trackers
         self.train_loss = MeanMetric()
         self.val_loss = MeanMetric()
 
@@ -68,5 +72,7 @@ class DistilBERTClassificationModule(L.LightningModule):
 
     def configure_optimizers(self):
         return torch.optim.AdamW(
-            self.parameters(), lr=self.hparams.learning_rate, weight_decay=0.01
+            self.parameters(),
+            lr=self.hparams.learning_rate,
+            weight_decay=self.hparams.weight_decay,
         )

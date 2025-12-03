@@ -7,7 +7,7 @@ class TrainingConfig(BaseSettings):
     """Configuration for training pipeline."""
 
     # MLflow Configuration
-    mlflow_tracking_uri: str = "http://mlflow.mlops.svc.cluster.local:5000"
+    mlflow_tracking_uri: str
     mlflow_experiment_name: str = "emotion-classification"
     mlflow_registered_model_name: str = "emotion-classifier"
 
@@ -16,6 +16,7 @@ class TrainingConfig(BaseSettings):
     dvc_train_data_path: str = "data/emotion/processed/train/train.parquet"
     dvc_val_data_path: str = "data/emotion/processed/val/val.parquet"
     dvc_metrics_path: str = "data/emotion/metadata.json"
+    dvc_remote: str | None = None
 
     # Ray Configuration
     ray_storage_path: str = "/tmp/ray_results"
@@ -32,9 +33,9 @@ class TrainingConfig(BaseSettings):
 # Data Contract - FROM ENV
 # ============================================== #
 class WorkflowTags(BaseSettings):
-    argo_workflow_uid: str = "local-dev"
-    docker_image_tag: str = "local"
-    dvc_data_version: str = "emotion-v0.3.0"
+    argo_workflow_uid: str = "DEV"
+    docker_image_tag: str = "DEV"
+    dvc_data_version: str
 
     class Config:
         env_prefix = ""

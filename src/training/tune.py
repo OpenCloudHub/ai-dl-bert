@@ -52,13 +52,12 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
     # Setup MLflow child run
     mlflow.set_tracking_uri(TRAINING_CONFIG.mlflow_tracking_uri)
     mlflow.set_experiment(TRAINING_CONFIG.mlflow_experiment_name)
-
     with mlflow.start_run(
         run_name=f"trial_lr{config['learning_rate']:.2e}",
-        nested=True,
-        tags=WORKFLOW_TAGS.model_dump(),
+        nested=True,  # Enable nested runs for hyperparameter tuning
+        tags=WORKFLOW_TAGS.model_dump(),  # Tag with our essential workflow info
     ) as run:
-        # Set parent manually (more reliable in distributed setting)
+        # Set parent tag manually (more reliable in distributed setting)
         mlflow.MlflowClient().set_tag(
             run.info.run_id, "mlflow.parentRunId", parent_run_id
         )
@@ -66,7 +65,6 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
         # Log hyperparameters
         mlflow.log_params(
             {
-                "learning_rate": config["learning_rate"],
                 "batch_size": config["batch_size"],
                 "num_epochs": config["num_epochs"],
             }
@@ -116,8 +114,9 @@ def main():
     """Main function."""
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=100)
-    parser.add_argument("--num-epochs", type=int, default=2)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--num-epochs", type=int, default=3)
+    parser.add_argument("--num-samples", type=int, default=2)  # Number of HP trials
     args = parser.parse_args()
 
     log_section("Ray Tune + MLflow Hyperparameter Search", "🎯")
@@ -143,7 +142,6 @@ def main():
         # Log parent run params
         mlflow.log_params(
             {
-                "num_trials": 2,
                 "num_epochs": args.num_epochs,
                 "data_limit": args.limit,
             }
@@ -158,8 +156,9 @@ def main():
             parent_run_id=parent_run.info.run_id,
         )
 
+        # Search space - wider LR range for better exploration
         search_space = {
-            "learning_rate": tune.loguniform(1e-5, 5e-5),
+            "learning_rate": tune.loguniform(1e-5, 1e-4),  # Wider range
             "batch_size": tune.choice([16, 32]),
             "num_epochs": args.num_epochs,
         }
@@ -174,7 +173,7 @@ def main():
             tune_config=tune.TuneConfig(
                 metric="loss",
                 mode="min",
-                num_samples=4,
+                num_samples=args.num_samples,
             ),
         )
 

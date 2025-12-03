@@ -52,11 +52,12 @@ def load_and_prepare_data(limit=None):
 
     logger.info(f"Number of classes: [yellow]{len(label2id)}[/yellow]")
 
-    # Load data
+    # Load data using DVC API as its just small datasets
     with dvc.api.open(
         TRAINING_CONFIG.dvc_train_data_path,
         repo=TRAINING_CONFIG.dvc_repo,
         rev=WORKFLOW_TAGS.dvc_data_version,
+        remote=TRAINING_CONFIG.dvc_remote,
         mode="rb",
     ) as f:
         train_df = pd.read_parquet(f)
@@ -65,6 +66,7 @@ def load_and_prepare_data(limit=None):
         TRAINING_CONFIG.dvc_val_data_path,
         repo=TRAINING_CONFIG.dvc_repo,
         rev=WORKFLOW_TAGS.dvc_data_version,
+        remote=TRAINING_CONFIG.dvc_remote,
         mode="rb",
     ) as f:
         val_df = pd.read_parquet(f)
