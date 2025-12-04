@@ -1,4 +1,35 @@
-"""Fashion MNIST serving application using Ray Serve + MLflow."""
+# =============================================================================
+# serve.py - Ray Serve + FastAPI Model Serving
+# =============================================================================
+#
+# Purpose:
+#   Production-ready model serving using Ray Serve with FastAPI integration.
+#   Loads models from MLflow Registry and supports hot updates without restart.
+#
+# Why Ray Serve + FastAPI?
+#   - Ray Serve: Distributed serving with auto-scaling
+#   - FastAPI: Async API with OpenAPI docs
+#   - MLflow: Load models by URI (models:/name/version)
+#   - Hot Reload: reconfigure() for zero-downtime updates
+#
+# Endpoints:
+#   GET  /         - Service info
+#   GET  /health   - Health check with model status
+#   GET  /info     - Model metadata (version, labels, training info)
+#   POST /predict  - Batch emotion prediction
+#
+# Usage:
+#   serve run src.serving.serve:app_builder model_uri="models:/name/1" --reload
+#
+# =============================================================================
+"""
+Ray Serve + FastAPI serving application for emotion classification.
+
+Provides model loading from MLflow, batch prediction, health checks,
+and hot model updates via reconfigure().
+"""
+- Hot model updates via reconfigure() method
+"""
 
 from datetime import datetime, timezone
 
@@ -25,6 +56,7 @@ from src.serving.schemas import (
 
 logger = get_logger(__name__)
 
+# FastAPI application with OpenAPI documentation
 app = FastAPI(
     title="😊 Emotion Classification API",
     description="Emotion classification using Ray Serve + MLflow + DistilBERT",
@@ -40,8 +72,33 @@ app = FastAPI(
 )
 @serve.ingress(app)
 class EmotionClassifier:
+    """
+    Ray Serve deployment for emotion classification.
+
+    This class wraps a DistilBERT model loaded from MLflow and exposes
+    it via FastAPI endpoints. It supports dynamic model updates through
+    the reconfigure() method, enabling zero-downtime model updates.
+
+    Attributes:
+        status: Current API health status (LOADING, HEALTHY, UNHEALTHY)
+        device: PyTorch device (cuda/cpu) for inference
+        model: Loaded PyTorch Lightning model
+        tokenizer: HuggingFace tokenizer for input processing
+        model_info: ModelInfo with version and training metadata
+        label2id: Mapping from emotion labels to class indices
+        id2label: Mapping from class indices to emotion labels
+        start_time: Service start time for uptime tracking
+    """
+
     def __init__(self, model_uri: str | None = None) -> None:
-        """Initialize the emotion classifier, optionally with a model URI."""
+        """
+        Initialize the emotion classifier deployment.
+
+        Args:
+            model_uri: Optional MLflow model URI to load at startup.
+                      Format: "models:/model-name/version" or "runs:/run-id/model"
+                      If not provided, deployment starts in NOT_READY state.
+        """
         logger.info("😊 Initializing Emotion Classification Service")
         self.status = APIStatus.NOT_READY
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,7 +119,19 @@ class EmotionClassifier:
                 self.status = APIStatus.UNHEALTHY
 
     def _load_model(self, model_uri: str) -> None:
-        """Internal method to load model and fetch metadata."""
+        """
+        Load model from MLflow and initialize tokenizer.
+
+        Fetches the model from MLflow Model Registry, loads label mappings
+        from training artifacts, and initializes the HuggingFace tokenizer.
+
+        Args:
+            model_uri: MLflow model URI (e.g., "models:/emotion-classifier/1")
+
+        Raises:
+            HTTPException: If model loading fails (503 for MLflow errors,
+                          500 for unexpected errors)
+        """
         logger.info(f"📦 Loading model from: {model_uri}")
         self.status = APIStatus.LOADING
 
@@ -70,26 +139,26 @@ class EmotionClassifier:
             # Get model info first to validate URI
             info = mlflow.models.get_model_info(model_uri)
 
-            # Get training run metadata
+            # Get training run metadata for data lineage
             client = mlflow.tracking.MlflowClient()
             run = client.get_run(info.run_id)
 
-            # Get data version from run tags
+            # Extract DVC version from run tags for data lineage tracking
             self.data_version = run.data.tags.get("dvc_data_version")
             if not self.data_version:
                 logger.warning("No dvc_data_version found in run tags")
 
             logger.info(f"📊 Data version: {self.data_version}")
 
-            # Load the PyTorch model (Lightning module)
+            # Load the PyTorch model (Lightning module saved by mlflow.pytorch)
             self.model = mlflow.pytorch.load_model(model_uri, map_location=self.device)
-            self.model.eval()
+            self.model.eval()  # Set to evaluation mode
 
-            # Load tokenizer (same as used in training)
+            # Load tokenizer (must match training tokenizer)
             logger.info(f"🔤 Loading tokenizer: {SERVING_CONFIG.model_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(SERVING_CONFIG.model_name)
 
-            # Try to load label mappings from artifacts
+            # Load label mappings from training artifacts
             try:
                 labels_artifact = client.download_artifacts(
                     run.info.run_id, "labels.json"
@@ -99,7 +168,7 @@ class EmotionClassifier:
                 with open(labels_artifact, "r") as f:
                     labels_data = json.load(f)
                     self.label2id = labels_data.get("label2id", {})
-                    # Convert string keys to int for id2label
+                    # Convert string keys to int for id2label (JSON limitation)
                     id2label_raw = labels_data.get("id2label", {})
                     self.id2label = {int(k): v for k, v in id2label_raw.items()}
                 logger.info(
@@ -107,17 +176,17 @@ class EmotionClassifier:
                 )
             except Exception as e:
                 logger.warning(f"⚠️  Could not load label mappings from artifacts: {e}")
-                # Fallback: use model's num_labels
+                # Fallback: generate generic labels based on model config
                 num_labels = self.model.model.config.num_labels
                 self.id2label = {i: f"emotion_{i}" for i in range(num_labels)}
                 self.label2id = {v: k for k, v in self.id2label.items()}
 
-            # Extract training timestamp
+            # Extract training timestamp from MLflow run
             training_timestamp = datetime.fromtimestamp(
                 run.info.start_time / 1000.0, tz=timezone.utc
             )
 
-            # Build ModelInfo
+            # Build ModelInfo for /info endpoint
             self.model_info = ModelInfo(
                 model_uri=model_uri,
                 model_uuid=info.model_uuid,
@@ -153,11 +222,18 @@ class EmotionClassifier:
             )
 
     def reconfigure(self, config: dict) -> None:
-        """Handle model updates without restarting the deployment.
+        """
+        Handle dynamic model updates without service restart.
 
-        Check: https://docs.ray.io/en/latest/serve/advanced-guides/inplace-updates.html
+        This method is called by Ray Serve when user_config changes,
+        enabling hot model swaps. See Ray Serve documentation:
+        https://docs.ray.io/en/latest/serve/advanced-guides/inplace-updates.html
 
-        Update via: serve.run(..., user_config={"model_uri": "new_uri"})
+        Args:
+            config: Dict containing new configuration, expects "model_uri" key
+
+        Usage:
+            serve.run(..., user_config={"model_uri": "models:/model/2"})
         """
         new_model_uri = config.get("model_uri")
 
@@ -171,7 +247,7 @@ class EmotionClassifier:
             self._load_model(new_model_uri)
             return
 
-        # Check if URI changed
+        # Check if URI changed before reloading
         if self.model_info.model_uri != new_model_uri:
             logger.info(
                 f"🔄 Updating model from {self.model_info.model_uri} to {new_model_uri}"
@@ -179,6 +255,10 @@ class EmotionClassifier:
             self._load_model(new_model_uri)
         else:
             logger.info("ℹ️ Model URI unchanged, skipping reload")
+
+    # =========================================================================
+    # API Endpoints
+    # =========================================================================
 
     @app.get(
         "/",
@@ -190,7 +270,12 @@ class EmotionClassifier:
         },
     )
     async def root(self):
-        """Root endpoint with basic info."""
+        """
+        Root endpoint providing service info and documentation links.
+
+        Returns basic service information including name, version, status,
+        and links to documentation and health check endpoints.
+        """
         return RootResponse(
             service="Emotion Classification API",
             version="1.0.0",
@@ -209,7 +294,13 @@ class EmotionClassifier:
         },
     )
     async def health(self):
-        """Health check endpoint."""
+        """
+        Health check endpoint for load balancers and orchestration.
+
+        Returns current service status, model loading state, and uptime.
+        Returns HTTP 503 if service is not healthy (useful for Kubernetes
+        readiness probes).
+        """
         uptime = (datetime.now(timezone.utc) - self.start_time).total_seconds()
 
         response = HealthResponse(
@@ -219,7 +310,7 @@ class EmotionClassifier:
             uptime_seconds=int(uptime),
         )
 
-        # Return 503 if not healthy
+        # Return 503 if not healthy (for load balancer health checks)
         if self.status != APIStatus.HEALTHY:
             detail = response.model_dump()
             raise HTTPException(
@@ -238,7 +329,16 @@ class EmotionClassifier:
         },
     )
     async def info(self):
-        """Get detailed model information including emotion labels."""
+        """
+        Get detailed model metadata including training information.
+
+        Returns comprehensive model information including:
+        - Model URI and version
+        - MLflow run ID and model UUID
+        - Training data version (DVC)
+        - Available emotion labels
+        - Training timestamp
+        """
         if self.model_info is None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -259,7 +359,10 @@ class EmotionClassifier:
     )
     async def predict(self, request: PredictionRequest):
         """
-        Predict emotion from text inputs.
+        Predict emotions from text inputs (batch processing supported).
+
+        Tokenizes input texts, runs inference through DistilBERT, and returns
+        predictions with confidence scores for all emotion classes.
 
         **Input Format:**
         - List of text strings (1-100 texts per request)

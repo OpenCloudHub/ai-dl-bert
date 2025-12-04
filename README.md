@@ -15,7 +15,7 @@
 <h1 align="center">Emotion Classification - MLOps Demo</h1>
 
 <p align="center">
-    DistilBERT emotion classification with  MLOps pipeline featuring PyTorch Lightning, MLflow tracking, Ray Tune hyperparameter optimization, and Ray Serve deployment.<br />
+    DistilBERT emotion classification with MLOps pipeline featuring PyTorch Lightning, MLflow tracking, Ray Tune hyperparameter optimization, and Ray Serve deployment.<br />
     <a href="https://github.com/opencloudhub"><strong>Explore OpenCloudHub »</strong></a>
   </p>
 </div>
@@ -26,9 +26,11 @@ ______________________________________________________________________
   <summary>📑 Table of Contents</summary>
   <ol>
     <li><a href="#about">About</a></li>
+    <li><a href="#thesis-context">Thesis Context</a></li>
     <li><a href="#features">Features</a></li>
     <li><a href="#architecture">Architecture</a></li>
     <li><a href="#getting-started">Getting Started</a></li>
+    <li><a href="#configuration">Configuration</a></li>
     <li><a href="#usage">Usage</a></li>
     <li><a href="#project-structure">Project Structure</a></li>
     <li><a href="#contributing">Contributing</a></li>
@@ -37,15 +39,51 @@ ______________________________________________________________________
   </ol>
 </details>
 
-<!-- TODO: Add Asha -->
-
 ______________________________________________________________________
 
 <h2 id="about">🎯 About</h2>
 
-This repository demonstrates a MLOps pipeline for text classification using emotion detection as the example use case. It showcases the integration of modern ML tooling including PyTorch Lightning for structured training, MLflow for experiment tracking and model registry, Ray Tune for distributed hyperparameter optimization, and Ray Serve for scalable model deployment.
+This repository demonstrates a production-ready MLOps pipeline for text classification using emotion detection as the example use case. It showcases the integration of modern ML tooling including **PyTorch Lightning** for structured training, **MLflow** for experiment tracking and model registry, **Ray Tune** for distributed hyperparameter optimization, and **Ray Serve** for scalable model deployment.
 
-The project uses DistilBERT (a distilled version of BERT) fine-tuned on emotion-labeled text data, with data versioning managed through [DVC Registry](https://github.com/OpenCloudHub/data-registry). This serves as a demo implementation for the OpenCloudHub project, demonstrating practices for ML workflows that can scale from local development to production clusters.
+The project fine-tunes **DistilBERT** (a distilled version of BERT that retains 97% of BERT's performance while being 60% smaller and 60% faster) on emotion-labeled text data from the [Hugging Face emotions dataset](https://huggingface.co/datasets/dair-ai/emotion). Dataset versioning is managed through a centralized [DVC Registry](https://github.com/OpenCloudHub/data-registry), enabling reproducible training across environments.
+
+This serves as a reference implementation for the **OpenCloudHub** project, demonstrating best practices for ML workflows that can scale from local development to production Kubernetes clusters.
+
+______________________________________________________________________
+
+<h2 id="thesis-context">📚 Thesis Context</h2>
+
+This repository is part of a master's thesis project exploring **MLOps practices for deep learning workflows**. It serves as a practical demonstration of:
+
+### Research Focus Areas
+
+| Area | Implementation in This Repo |
+|------|----------------------------|
+| **Experiment Tracking** | MLflow with parent-child run hierarchy for hyperparameter tuning |
+| **Model Versioning** | MLflow Model Registry with automatic registration from best trials |
+| **Data Versioning** | DVC integration with external data registry for reproducibility |
+| **Distributed Training** | Ray Tune + PyTorch Lightning for scalable hyperparameter search |
+| **Model Serving** | Ray Serve with hot-reload capability for zero-downtime updates |
+| **CI/CD Integration** | GitHub Actions triggering Argo Workflows on Kubernetes |
+
+### Key Technical Contributions
+
+1. **Unified MLflow Run Hierarchy**: Demonstrates organizing hyperparameter search trials as nested child runs under a parent run, enabling cleaner experiment comparison and model lineage tracking.
+
+2. **Ray Tune + Lightning Integration**: Shows how to properly integrate Ray Tune's distributed trials with PyTorch Lightning's training loop while maintaining MLflow logging consistency.
+
+3. **Hot Model Reloading**: Implements Ray Serve's `reconfigure` pattern for updating deployed models without service restart, preserving inference availability.
+
+4. **Multi-Stage Docker Builds**: Uses shared base layers across training and serving images to reduce build times and storage while maintaining separation of concerns.
+
+### Related Thesis Repositories
+
+- [`OpenCloudHub/data-registry`](https://github.com/OpenCloudHub/data-registry) - Centralized DVC data versioning
+- [`OpenCloudHub/infra-kubernetes`](https://github.com/OpenCloudHub/infra-kubernetes) - Kubernetes cluster infrastructure
+- [`OpenCloudHub/local-compose-stack`](https://github.com/OpenCloudHub/local-compose-stack) - Local Docker Compose dev stack (MLflow, MinIO)
+- [`OpenCloudHub/.github`](https://github.com/OpenCloudHub/.github) - Shared CI/CD workflows and Argo templates
+
+______________________________________________________________________
 
 **Key Learning Points:**
 
@@ -53,8 +91,9 @@ The project uses DistilBERT (a distilled version of BERT) fine-tuned on emotion-
 - Parent-child MLflow runs for hyperparameter search organization
 - Ray Tune callbacks for distributed training with automatic checkpointing
 - Model registration and versioning in MLflow Model Registry
-- Zero-downtime model serving with Ray Serve
+- Zero-downtime model serving with Ray Serve's `reconfigure` method
 - DVC integration for reproducible dataset versioning
+- Multi-stage Docker builds for optimized training and serving images
 
 ______________________________________________________________________
 
@@ -62,98 +101,128 @@ ______________________________________________________________________
 
 ### MLOps Pipeline
 
-- 🔬 **Experiment Tracking**: MLflow integration with parent-child run hierarchy for hyperparameter tuning
-- 📊 **Model Registry**: Automatic model registration with versioning and metadata
-- 🎯 **Hyperparameter Optimization**: Ray Tune with ASHA scheduler for efficient search
-- ⚡ **Distributed Training**: Ray + PyTorch Lightning for scalable model training
+- 🔬 **Experiment Tracking**: MLflow integration with parent-child run hierarchy for organized hyperparameter tuning experiments
+- 📊 **Model Registry**: Automatic model registration with versioning, metadata, and label mappings
+- 🎯 **Hyperparameter Optimization**: Ray Tune for distributed hyperparameter search with configurable search spaces
+- ⚡ **Distributed Training**: Ray + PyTorch Lightning integration for scalable model training
 - 🚀 **Model Serving**: FastAPI + Ray Serve for production inference with hot model reloading
 
 ### Development & Deployment
 
-- 🐳 **Containerized Environment**: Docker-based development with UV package manager
-- 📦 **Data Versioning**: DVC integration for reproducible dataset management
-- 🧪 **VS Code DevContainer**: Pre-configured development environment
-- 🔄 **CI/CD Ready**: GitHub Actions workflows for automated CI/CD and training pipelines
+- 🐳 **Containerized Environment**: Multi-stage Docker builds with UV package manager for fast, reproducible builds
+- 📦 **Data Versioning**: DVC integration with external data registry for reproducible dataset management
+- 🧪 **VS Code DevContainer**: Pre-configured development environment with all tools ready
+- 🔄 **CI/CD Ready**: GitHub Actions workflows triggering Argo MLOps pipelines on Kubernetes
 
 ### Key Integrations
 
 #### PyTorch Lightning + MLflow
 
-- Automatic metric logging during training and validation
-- Model checkpointing integrated with MLflow artifact storage
-- Hyperparameter logging with experiment comparison
+- **Automatic metric logging**: Loss, accuracy, and F1 score logged per epoch
+- **Model checkpointing**: Best model checkpoint integrated with Ray Tune's `TuneReportCheckpointCallback`
+- **Hyperparameter tracking**: All training hyperparameters logged for experiment comparison
 
 #### Ray Tune + MLflow
 
-- Distributed hyperparameter search with parent run tracking
-- Child runs for each trial automatically nested in MLflow
-- Best model selection and automatic registration to Model Registry
+- **Nested run hierarchy**: Parent run for the search, child runs for each trial
+- **Distributed trials**: Parallel hyperparameter exploration with configurable resources (CPU/GPU)
+- **Best model selection**: Automatic identification and registration of the best performing model
 
 #### Ray Serve + MLflow
 
-- Direct model loading from MLflow Model Registry
-- Hot model updates without service restart (using `reconfigure`)
-- Automatic model metadata exposure via `/info` endpoint
+- **Model Registry integration**: Load models directly via `models:/model-name/version` URIs
+- **Hot model updates**: Use `reconfigure` to update models without service restart
+- **Model metadata API**: `/info` endpoint exposes model version, training info, and emotion labels
 
 ______________________________________________________________________
 
 <h2 id="architecture">🏗️ Architecture</h2>
 
+### End-to-End Pipeline
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Data Versioning (DVC)                   │
-│  emotion-v0.3.0 → GitHub Data Registry → Local Cache       │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Hyperparameter Optimization (Ray Tune)         │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Parent MLflow Run: hyperparameter_search           │  │
-│  │  ├─ Trial 1 (Child Run): LR=2e-5, BS=16            │  │
-│  │  ├─ Trial 2 (Child Run): LR=5e-5, BS=32            │  │
-│  │  ├─ Trial 3 (Child Run): LR=3e-5, BS=16            │  │
-│  │  └─ Trial 4 (Child Run): LR=4e-5, BS=32            │  │
-│  │  → Best model selected and checkpointed             │  │
-│  └──────────────────────────────────────────────────────┘  │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Training (PyTorch Lightning)                   │
-│  DistilBERT Model                                           │
-│  ├─ Automatic metric logging (loss, accuracy, F1)          │
-│  ├─ Checkpointing best model                               │
-│  └─ Label mappings saved as artifacts                      │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Model Registry (MLflow)                        │
-│  models:/ci.emotion-classifier/1                            │
-│  ├─ Model artifacts (PyTorch Lightning checkpoint)         │
-│  ├─ Model signature (input/output schema)                  │
-│  ├─ Label mappings (labels.json)                           │
-│  └─ Training metadata (DVC version, hyperparameters)       │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Model Serving (Ray Serve + FastAPI)           │
-│  GET  /health      → Service health status                 │
-│  GET  /info        → Model metadata & emotion labels       │
-│  POST /predict     → Batch emotion classification          │
-│  └─ Hot reload: Update model without service restart       │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           DATA LAYER                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  DVC Registry (github.com/OpenCloudHub/data-registry)               │    │
+│  │  └── data/emotion/                                                  │    │
+│  │      ├── processed/train/train.parquet                              │    │
+│  │      ├── processed/val/val.parquet                                  │    │
+│  │      └── metadata.json (class labels, statistics)                   │    │
+│  │  Tags: emotion-v0.3.0, emotion-v1.0.0                               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │ dvc.api.open(rev="emotion-v1.0.0")
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        TRAINING LAYER                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  Ray Tune Hyperparameter Search                                     │    │
+│  │  ┌───────────────────────────────────────────────────────────────┐  │    │
+│  │  │  MLflow Parent Run: "hyperparameter_search"                   │  │    │
+│  │  │  ├─ Trial 1 (Child): lr=2e-5, batch=16  → val_loss=0.42       │  │    │
+│  │  │  ├─ Trial 2 (Child): lr=5e-5, batch=32  → val_loss=0.38 ★    │  │    │
+│  │  │  ├─ Trial 3 (Child): lr=3e-5, batch=16  → val_loss=0.45       │  │    │
+│  │  │  └─ Trial 4 (Child): lr=4e-5, batch=32  → val_loss=0.41       │  │    │
+│  │  └───────────────────────────────────────────────────────────────┘  │    │
+│  │                                                                     │    │
+│  │  PyTorch Lightning Module (DistilBERT)                              │    │
+│  │  ├─ Forward: input_ids → DistilBERT → logits → softmax              │    │
+│  │  ├─ Metrics: loss, accuracy, F1 (logged to MLflow)                  │    │
+│  │  └─ Optimizer: AdamW with weight decay                              │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │ Best trial → mlflow.pytorch.log_model()
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        REGISTRY LAYER                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  MLflow Model Registry                                              │    │
+│  │  models:/ci.emotion-classifier/1                                    │    │
+│  │  ├─ model/  (PyTorch Lightning checkpoint)                          │    │
+│  │  ├─ labels.json  (emotion class mappings)                           │    │
+│  │  └─ MLmodel  (signature, requirements, metadata)                    │    │
+│  │                                                                     │    │
+│  │  Tags: dvc_data_version, docker_image_tag, argo_workflow_uid        │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │ mlflow.pytorch.load_model(model_uri)
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        SERVING LAYER                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  Ray Serve + FastAPI                                                │    │
+│  │  ┌───────────────────────────────────────────────────────────────┐  │    │
+│  │  │  GET  /          → Service info, docs link                    │  │    │
+│  │  │  GET  /health    → Status, uptime, model loaded               │  │    │
+│  │  │  GET  /info      → Model version, labels, training metadata   │  │    │
+│  │  │  POST /predict   → Batch emotion classification               │  │    │
+│  │  └───────────────────────────────────────────────────────────────┘  │    │
+│  │                                                                     │    │
+│  │  Hot Reload: reconfigure({"model_uri": "models:/name/2"})           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Integration Flow:**
+### Docker Multi-Stage Build
 
-1. **Data**: DVC fetches versioned dataset from GitHub registry
-1. **Training**: PyTorch Lightning trains model, logs to MLflow
-1. **Optimization**: Ray Tune explores hyperparameter space with nested MLflow runs
-1. **Registry**: Best model registered to MLflow with metadata
-1. **Serving**: Ray Serve loads model from registry for inference
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    uv_base (shared layer)                   │
+│  - UV package manager + core dependencies                   │
+│  - Compiled bytecode for fast startup                       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+       ┌───────────────────┼───────────────────┐
+       │                   │                   │
+       ▼                   ▼                   ▼
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│     dev     │     │   training  │     │   serving   │
+│  + all deps │     │  + ray base │     │  + slim img │
+│  + dev tools│     │  + lightning│     │  + fastapi  │
+│  DevContainer│    │  + dvc      │     │  + ray serve│
+└─────────────┘     └─────────────┘     └─────────────┘
+```
 
 ______________________________________________________________________
 
@@ -173,7 +242,7 @@ ______________________________________________________________________
    cd ai-dl-bert
    ```
 
-1. **Open in DevContainer** (Recommended)
+2. **Open in DevContainer** (Recommended)
 
    VSCode: `Ctrl+Shift+P` → `Dev Containers: Rebuild and Reopen in Container`
 
@@ -184,36 +253,106 @@ ______________________________________________________________________
    curl -LsSf https://astral.sh/uv/install.sh | sh
 
    # Install dependencies
-   uv sync --dev
+   uv sync --all-extras
    ```
 
-1. **Start local MLflow tracking server**
+3. **Start infrastructure** (choose one option)
 
+   **Option A: Local Docker Compose Stack** (quick testing)
+   
+   Use the [local-compose-stack](https://github.com/OpenCloudHub/local-compose-stack) for a quick MLflow + MinIO setup:
+   
    ```bash
-   mlflow server \
-     --host 0.0.0.0 \
-     --port 5000 \
-     --backend-store-uri file:./output/mlruns \
-     --default-artifact-root file:./output/mlruns/artifacts
+   # In a separate directory
+   git clone https://github.com/OpenCloudHub/local-compose-stack.git
+   cd local-compose-stack
+   docker compose up -d
    ```
-
-   Access MLflow UI at `http://localhost:8081`
-
-1. **Configure environment**
-
+   
+   Then configure this project:
    ```bash
-   source .env
+   # Back in ai-dl-bert
+   set -a && source .env.docker && set +a
    ```
+   
+   Access UIs:
+   - MLflow: `http://localhost:5000`
+   - MinIO Console: `http://localhost:9001`
 
-1. **Start local Ray cluster**
+   **Option B: Minikube** (closer to production)
+   
+   Connect to your running minikube cluster with services from [infra-kubernetes](https://github.com/OpenCloudHub/infra-kubernetes):
+   
+   ```bash
+   set -a && source .env.minikube && set +a
+   ```
+   
+   Access UIs via ingress:
+   - MLflow: `https://mlflow.internal.opencloudhub.org`
+   - MinIO: `https://minio.internal.opencloudhub.org`
+
+4. **Start local Ray cluster** (for local training)
 
    ```bash
-   ray start --head --num-cpus 12
+   ray start --head --num-cpus 8
    ```
 
    Access Ray dashboard at `http://127.0.0.1:8265`
 
-You're now ready to train and serve models locally!
+You're now ready to train and serve models!
+
+______________________________________________________________________
+
+<h2 id="configuration">⚙️ Configuration</h2>
+
+### Environment Files
+
+Two pre-configured environment files are provided:
+
+| File | Use Case | Infrastructure |
+|------|----------|----------------|
+| `.env.docker` | Local development | [local-compose-stack](https://github.com/OpenCloudHub/local-compose-stack) |
+| `.env.minikube` | Minikube testing | [infra-kubernetes](https://github.com/OpenCloudHub/infra-kubernetes) |
+
+**Apply configuration:**
+```bash
+set -a && source .env.docker && set +a    # For Docker Compose
+set -a && source .env.minikube && set +a  # For Minikube
+```
+
+### Environment Variables
+
+The application uses Pydantic Settings for type-safe configuration:
+
+#### Training Configuration (`src/training/config.py`)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MLFLOW_TRACKING_URI` | MLflow server URL | *Required* |
+| `MLFLOW_EXPERIMENT_NAME` | Experiment name in MLflow | `emotion-classification` |
+| `MLFLOW_REGISTERED_MODEL_NAME` | Model registry name | `emotion-classifier` |
+| `DVC_DATA_VERSION` | DVC tag for data version | *Required* |
+| `DVC_REPO` | DVC registry repository URL | `https://github.com/OpenCloudHub/data-registry` |
+| `DVC_REMOTE` | DVC remote name (for S3/MinIO) | `None` |
+| `ARGO_WORKFLOW_UID` | Argo workflow ID (for CI/CD) | `DEV` |
+| `DOCKER_IMAGE_TAG` | Docker image tag (for CI/CD) | `DEV` |
+
+#### Serving Configuration (`src/serving/config.py`)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MODEL_NAME` | HuggingFace model name for tokenizer | `distilbert-base-uncased` |
+| `API_NAME` | API service name | `emotion-classifier` |
+| `REQUEST_MAX_LENGTH` | Maximum input sequence length | `128` |
+
+#### S3/MinIO Configuration (for artifact storage)
+
+| Variable | Description |
+|----------|-------------|
+| `AWS_ACCESS_KEY_ID` | S3/MinIO access key |
+| `AWS_SECRET_ACCESS_KEY` | S3/MinIO secret key |
+| `AWS_ENDPOINT_URL` | S3/MinIO endpoint URL |
+| `MLFLOW_S3_ENDPOINT_URL` | MLflow S3 endpoint (same as above) |
 
 ______________________________________________________________________
 
@@ -331,28 +470,51 @@ ______________________________________________________________________
 ```
 ai-dl-bert/
 ├── src/
-│   ├── training/                       # Training and optimization
+│   ├── training/                       # Training and optimization module
 │   │   ├── tune.py                     # Ray Tune + MLflow hyperparameter search
-│   │   ├── data.py                     # DVC data loading and preprocessing
-│   │   ├── model.py                    # PyTorch Lightning module
-│   │   └── config.py                   # Training configuration
-│   ├── serving/                        # Model serving (Ray Serve + FastAPI)
-│   │   ├── serve.py                    # FastAPI app with prediction endpoints
+│   │   ├── data.py                     # DVC data loading and tokenization
+│   │   ├── model.py                    # PyTorch Lightning DistilBERT module
+│   │   └── config.py                   # Pydantic settings for training
+│   ├── serving/                        # Model serving module
+│   │   ├── serve.py                    # Ray Serve + FastAPI endpoints
 │   │   ├── schemas.py                  # Pydantic request/response models
-│   │   └── config.py                   # Serving configuration
+│   │   └── config.py                   # Pydantic settings for serving
 │   └── _utils/                         # Shared utilities
-│       └── logging.py                  # Rich console logging setup
-├── tests/                              # Unit and integration tests
-├── .devcontainer/                      # VS Code DevContainer config
+│       └── logging.py                  # Rich console logging
+├── notebooks/                          # Jupyter notebooks for exploration
+├── .devcontainer/                      # VS Code DevContainer configuration
 ├── .github/workflows/                  # CI/CD workflows
-│   ├── ci-code-quality.yaml            # SHared code quality
-│   ├── ci-docker-build-push.yaml       # Shared docker image building
-│   └── train.yaml                      # Automated training pipeline
-├── Dockerfile                          # Multi-stage container build
-├── pyproject.toml                      # Project dependencies and config
+│   ├── ci-code-quality.yaml            # Code quality checks (ruff)
+│   ├── ci-docker-build-push.yaml       # Conditional Docker image builds
+│   └── train.yaml                      # MLOps pipeline trigger
+├── .env.docker                         # Config for local-compose-stack
+├── .env.minikube                       # Config for minikube cluster
+├── Dockerfile                          # Multi-stage build (dev/training/serving)
+├── pyproject.toml                      # Project dependencies
 ├── uv.lock                             # Dependency lock file
-└── README.md                           # This file
+└── README.md                           # This documentation
 ```
+
+### Module Details
+
+#### `src/training/` - Training Pipeline
+
+- **`tune.py`**: Main entry point for hyperparameter search. Creates MLflow parent run, launches Ray Tune trials, and registers the best model.
+- **`model.py`**: PyTorch Lightning `LightningModule` wrapping DistilBERT with multi-class metrics (accuracy, F1).
+- **`data.py`**: Loads data from DVC registry, tokenizes with HuggingFace tokenizer, creates PyTorch datasets.
+- **`config.py`**: Configuration classes using Pydantic Settings for environment variable binding.
+
+#### `src/serving/` - Serving API
+
+- **`serve.py`**: Ray Serve deployment with FastAPI ingress. Supports model loading from MLflow and hot updates via `reconfigure()`.
+- **`schemas.py`**: Pydantic models for request/response validation (`PredictionRequest`, `PredictionResponse`, `ModelInfo`).
+- **`config.py`**: Serving-specific configuration (model name, max length, API name).
+
+#### `.github/workflows/` - CI/CD Pipelines
+
+- **`ci-code-quality.yaml`**: Runs on PRs and non-main branches. Uses shared workflow for ruff linting.
+- **`ci-docker-build-push.yaml`**: Runs on main branch. Builds training/serving images conditionally based on changed files.
+- **`train.yaml`**: Manual dispatch workflow that triggers Argo MLOps pipeline on Kubernetes cluster.
 
 ______________________________________________________________________
 

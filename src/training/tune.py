@@ -1,5 +1,33 @@
+# =============================================================================
+# tune.py - Ray Tune Hyperparameter Search with MLflow Integration
+# =============================================================================
+#
+# Purpose:
+#   Orchestrates distributed hyperparameter optimization using Ray Tune while
+#   maintaining a unified experiment tracking hierarchy in MLflow.
+#
+# Key Concepts:
+#   - Parent-Child MLflow Runs: Parent run for entire search, child runs per trial
+#   - Ray Tune + Lightning: TuneReportCheckpointCallback for metrics & checkpoints
+#   - Automatic Model Registration: Best model registered to MLflow Model Registry
+#
+# Usage:
+#   # Local development
+#   python src/training/tune.py --num-epochs 3 --num-samples 4 --limit 1000
+#
+#   # As Ray job
+#   RAY_ADDRESS='http://127.0.0.1:8265' ray job submit --working-dir . \
+#     -- python src/training/tune.py --num-epochs 5 --num-samples 8
+#
+# Required Environment Variables:
+#   MLFLOW_TRACKING_URI, DVC_DATA_VERSION
+#
+# =============================================================================
 """
-Simple Ray Tune + MLflow + Pytorch Lightning integration.
+Ray Tune + MLflow + PyTorch Lightning hyperparameter optimization.
+
+Provides distributed hyperparameter search with parent-child MLflow run
+hierarchy and automatic best model registration.
 """
 
 import os
@@ -25,11 +53,33 @@ from src.training.model import DistilBERTClassificationModule
 logger = get_logger(__name__)
 
 
-# ============================================== #
-# Training Function
-# ============================================== #
+# =============================================================================
+# Training Function (Executed per Trial)
+# =============================================================================
 def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
-    """Training function for each trial."""
+    """
+    Training function executed for each Ray Tune trial.
+
+    This function is called by Ray Tune for each hyperparameter combination.
+    It creates a nested MLflow child run, trains the model using PyTorch
+    Lightning, and reports metrics back to Ray Tune for hyperparameter
+    selection.
+
+    Args:
+        config: Dict containing hyperparameters for this trial:
+            - learning_rate: Float, learning rate for AdamW optimizer
+            - batch_size: Int, batch size for training
+            - num_epochs: Int, number of training epochs
+        train_dataset: PyTorch Dataset for training
+        val_dataset: PyTorch Dataset for validation
+        num_classes: Number of emotion classes
+        parent_run_id: MLflow run ID of the parent hyperparameter search run
+
+    Note:
+        The function saves the MLflow run ID to the Ray checkpoint directory,
+        allowing the main process to identify which MLflow run corresponds
+        to the best trial for model registration.
+    """
 
     # Create data loaders
     train_loader = DataLoader(
@@ -98,7 +148,8 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
         # Train
         trainer.fit(model, train_loader, val_loader)
 
-        # Save run id to checkpoint
+        # Save MLflow run ID to checkpoint for later retrieval
+        # This allows the main process to find the MLflow run for the best trial
         checkpoint = tune.get_checkpoint()
         if checkpoint:
             with checkpoint.as_directory() as checkpoint_dir:
@@ -107,11 +158,24 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
                     f.write(run.info.run_id)
 
 
-# ============================================== #
+# =============================================================================
 # Main Orchestration
-# ============================================== #
+# =============================================================================
 def main():
-    """Main function."""
+    """
+    Main orchestration function for hyperparameter search.
+
+    Workflow:
+        1. Load and prepare data from DVC registry
+        2. Create MLflow parent run for the search
+        3. Configure Ray Tune with search space and resources
+        4. Execute distributed trials
+        5. Identify best trial and register model to MLflow
+
+    The function handles the complete lifecycle of a hyperparameter search,
+    from data loading to model registration, with proper cleanup of Ray
+    resources at the end.
+    """
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
@@ -181,7 +245,9 @@ def main():
         logger.info("This may take several minutes...")
         results = tuner.fit()
 
-        # Get errors
+        # =================================================================
+        # Results Analysis
+        # =================================================================
         if results.errors:
             logger.error(f"Errors in Trials: {results.errors}")
         else:
