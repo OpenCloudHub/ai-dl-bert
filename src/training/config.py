@@ -64,8 +64,8 @@ class TrainingConfig(BaseSettings):
 
     # MLflow Configuration (tracking server and experiment settings)
     mlflow_tracking_uri: str  # Required: e.g., "http://mlflow:5000"
-    mlflow_experiment_name: str = "emotion-classification"
-    mlflow_registered_model_name: str = "emotion-classifier"
+    mlflow_experiment_name: str = "emotion"
+    mlflow_registered_model_name: str = "ci.emotion-classifier"
 
     # DVC Configuration (data registry settings)
     dvc_repo: str = "https://github.com/OpenCloudHub/data-registry"

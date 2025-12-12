@@ -27,7 +27,6 @@ Ray Serve + FastAPI serving application for emotion classification.
 
 Provides model loading from MLflow, batch prediction, health checks,
 and hot model updates via reconfigure().
-"""
 - Hot model updates via reconfigure() method
 """
 

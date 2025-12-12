@@ -31,6 +31,7 @@ hierarchy and automatic best model registration.
 """
 
 import os
+import tempfile
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -38,11 +39,16 @@ import argparse
 
 import lightning as L
 import mlflow
+import numpy as np
 import ray
 import ray.tune
 import torch
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import Schema, TensorSpec
 from ray import tune
+from ray.train import Checkpoint
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
+from ray.tune.schedulers import ASHAScheduler
 from torch.utils.data import DataLoader
 
 from src._utils.logging import get_logger, log_section
@@ -51,6 +57,76 @@ from src.training.data import load_and_prepare_data
 from src.training.model import DistilBERTClassificationModule
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Custom Callback to Track MLflow Run ID in Checkpoints
+# =============================================================================
+class TuneReportCheckpointWithMLflow(TuneReportCheckpointCallback):
+    """
+    Extended TuneReportCheckpointCallback that saves the MLflow run ID
+    alongside the model checkpoint, enabling the main process to identify
+    which MLflow run corresponds to the best trial.
+
+    Also logs metrics to MLflow at each validation end to ensure metrics
+    are captured even when ASHA early-stops a trial.
+    """
+
+    def __init__(self, mlflow_run_id: str, **kwargs):
+        super().__init__(**kwargs)
+        self.mlflow_run_id = mlflow_run_id
+
+    def _handle(self, trainer: L.Trainer, pl_module: L.LightningModule):
+        """Override to include MLflow run ID in checkpoint and log metrics."""
+        if trainer.sanity_checking:
+            return
+
+        # Get metrics
+        metrics = {}
+        for key, value in self._metrics.items():
+            if value in trainer.callback_metrics:
+                metrics[key] = trainer.callback_metrics[value].item()
+
+        # Log metrics to MLflow immediately (important for early-stopped trials)
+        # This ensures metrics are captured before ASHA potentially kills the process
+        try:
+            with mlflow.start_run(run_id=self.mlflow_run_id, nested=True):
+                epoch = trainer.current_epoch + 1
+                # Log validation metrics (same as what Ray Tune sees)
+                mlflow.log_metrics(
+                    {
+                        "val_loss": metrics.get("loss", 0),
+                        "val_acc": metrics.get("accuracy", 0),
+                        "val_f1": metrics.get("f1", 0),
+                        "epoch": epoch,
+                    },
+                    step=epoch,
+                )
+                # Also log training metrics if available
+                train_metrics = {
+                    k: v.item() if hasattr(v, "item") else v
+                    for k, v in trainer.callback_metrics.items()
+                    if k.startswith("train_")
+                }
+                if train_metrics:
+                    mlflow.log_metrics(train_metrics, step=epoch)
+        except Exception:
+            pass  # Don't fail training if MLflow logging fails
+
+        # Create checkpoint with MLflow run ID
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Save model checkpoint
+            ckpt_path = os.path.join(tmpdir, "checkpoint")
+            trainer.save_checkpoint(ckpt_path)
+
+            # Save MLflow run ID
+            run_id_path = os.path.join(tmpdir, "mlflow_run_id.txt")
+            with open(run_id_path, "w") as f:
+                f.write(self.mlflow_run_id)
+
+            # Report to Ray Tune with checkpoint
+            checkpoint = Checkpoint.from_directory(tmpdir)
+            tune.report(metrics, checkpoint=checkpoint)
 
 
 # =============================================================================
@@ -80,6 +156,9 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
         allowing the main process to identify which MLflow run corresponds
         to the best trial for model registration.
     """
+    # Get Ray Tune trial info for consistent naming
+    trial_id = ray.tune.get_context().get_trial_id()
+    trial_name = ray.tune.get_context().get_trial_name()
 
     # Create data loaders
     train_loader = DataLoader(
@@ -100,28 +179,47 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
     )
 
     # Setup MLflow child run
+    # Ensure MLflow connection is established before starting run
     mlflow.set_tracking_uri(TRAINING_CONFIG.mlflow_tracking_uri)
     mlflow.set_experiment(TRAINING_CONFIG.mlflow_experiment_name)
-    with mlflow.start_run(
-        run_name=f"trial_lr{config['learning_rate']:.2e}",
-        nested=True,  # Enable nested runs for hyperparameter tuning
-        tags=WORKFLOW_TAGS.model_dump(),  # Tag with our essential workflow info
-    ) as run:
-        # Set parent tag manually (more reliable in distributed setting)
-        mlflow.MlflowClient().set_tag(
-            run.info.run_id, "mlflow.parentRunId", parent_run_id
+
+    # Verify experiment exists (forces connection establishment)
+    experiment = mlflow.get_experiment_by_name(TRAINING_CONFIG.mlflow_experiment_name)
+    if experiment is None:
+        raise RuntimeError(
+            f"MLflow experiment '{TRAINING_CONFIG.mlflow_experiment_name}' not found"
         )
 
-        # Log hyperparameters
+    # Start the run with the same name as Ray Tune trial for easy correlation
+    run = mlflow.start_run(
+        run_name=trial_name,  # Use Ray Tune's trial name for consistency
+        nested=True,
+        tags=WORKFLOW_TAGS.model_dump(),
+    )
+    mlflow_run_id = run.info.run_id
+
+    try:
+        # Set parent tag manually (more reliable in distributed setting)
+        mlflow.MlflowClient().set_tag(
+            mlflow_run_id, "mlflow.parentRunId", parent_run_id
+        )
+        # Also tag with Ray Tune trial ID for traceability
+        mlflow.set_tag("ray_tune_trial_id", trial_id)
+        mlflow.set_tag("ray_tune_trial_name", trial_name)
+
+        # Log all hyperparameters from the search space
         mlflow.log_params(
             {
+                "learning_rate": config["learning_rate"],
                 "batch_size": config["batch_size"],
                 "num_epochs": config["num_epochs"],
+                "model_name": TRAINING_CONFIG.model_name,
             }
         )
 
-        # Callback for Ray Tune
-        tune_callback = TuneReportCheckpointCallback(
+        # Custom callback that saves MLflow run ID with checkpoint
+        tune_callback = TuneReportCheckpointWithMLflow(
+            mlflow_run_id=mlflow_run_id,
             metrics={"loss": "val_loss", "accuracy": "val_acc", "f1": "val_f1"},
             on="validation_end",
         )
@@ -137,25 +235,22 @@ def train_model(config, train_dataset, val_dataset, num_classes, parent_run_id):
             logger=False,
         )
 
-        # Enable MLflow autolog
-        mlflow.pytorch.autolog(
-            log_models=False,
-            log_datasets=False,
-            log_model_signatures=False,
-            checkpoint=False,  # Ray Tune handles checkpoints
-        )
+        # NOTE: We intentionally do NOT use mlflow.pytorch.autolog() here.
+        # Our TuneReportCheckpointWithMLflow callback handles metric logging
+        # to ensure metrics exactly match what Ray Tune reports.
 
         # Train
         trainer.fit(model, train_loader, val_loader)
 
-        # Save MLflow run ID to checkpoint for later retrieval
-        # This allows the main process to find the MLflow run for the best trial
-        checkpoint = tune.get_checkpoint()
-        if checkpoint:
-            with checkpoint.as_directory() as checkpoint_dir:
-                run_id_file = os.path.join(checkpoint_dir, "mlflow_run_id.txt")
-                with open(run_id_file, "w") as f:
-                    f.write(run.info.run_id)
+        # Log final training state
+        mlflow.log_metric(
+            "completed_all_epochs",
+            int(trainer.current_epoch + 1 == config["num_epochs"]),
+        )
+
+    finally:
+        # Always end the MLflow run, even if ASHA terminates us early
+        mlflow.end_run()
 
 
 # =============================================================================
@@ -203,11 +298,18 @@ def main():
     ) as parent_run:
         logger.info(f"Parent run ID: [yellow]{parent_run.info.run_id}[/yellow]")
 
-        # Log parent run params
+        # Log parent run params (including ASHA scheduler config)
         mlflow.log_params(
             {
                 "num_epochs": args.num_epochs,
                 "data_limit": args.limit,
+                "scheduler": "ASHAScheduler",
+                "asha_metric": "accuracy",
+                "asha_mode": "max",
+                "asha_grace_period": 2,
+                "asha_reduction_factor": 2,
+                "asha_max_t": args.num_epochs,
+                "asha_brackets": 1,
             }
         )
 
@@ -231,12 +333,26 @@ def main():
         resources = {"cpu": 4, "gpu": 1 if gpu_available else 0}
         logger.info(f"Resources per trial: [cyan]{resources}[/cyan]")
 
+        # ASHA Scheduler for early stopping of underperforming trials
+        # - grace_period: Minimum epochs before a trial can be stopped
+        # - max_t: Maximum epochs a trial can run
+        # - reduction_factor: Fraction of trials to keep each round (1/factor survive)
+        # - brackets: Number of brackets (1 recommended by ASHA authors)
+        asha_scheduler = ASHAScheduler(
+            time_attr="training_iteration",
+            metric="accuracy",
+            mode="max",
+            max_t=args.num_epochs,
+            grace_period=2,  # Minimum 2 epochs - ensures meaningful validation metrics
+            reduction_factor=2,  # Aggressive: halve trials each round
+            brackets=1,
+        )
+
         tuner = tune.Tuner(
             tune.with_resources(trainable, resources=resources),
             param_space=search_space,
             tune_config=tune.TuneConfig(
-                metric="loss",
-                mode="min",
+                scheduler=asha_scheduler,
                 num_samples=args.num_samples,
             ),
         )
@@ -253,21 +369,87 @@ def main():
         else:
             logger.success("✨ No errors in trials")
 
+        # =================================================================
+        # End Orphaned MLflow Runs
+        # =================================================================
+        # When ASHA terminates trials early, the MLflow runs may not be
+        # properly closed because Ray kills the process. We need to
+        # explicitly end all child runs that are still in 'RUNNING' state.
+        client = mlflow.MlflowClient()
+        child_runs = client.search_runs(
+            experiment_ids=[
+                mlflow.get_experiment_by_name(
+                    TRAINING_CONFIG.mlflow_experiment_name
+                ).experiment_id
+            ],
+            filter_string=f"tags.mlflow.parentRunId = '{parent_run.info.run_id}'",
+        )
+        orphaned_count = 0
+        for child_run in child_runs:
+            if child_run.info.status == "RUNNING":
+                client.set_terminated(child_run.info.run_id, status="FINISHED")
+                orphaned_count += 1
+        if orphaned_count > 0:
+            logger.info(
+                f"Closed [yellow]{orphaned_count}[/yellow] orphaned MLflow runs (early-stopped by ASHA)"
+            )
+
+        # =================================================================
+        # ASHA Early Stopping Analysis
+        # =================================================================
+        log_section("ASHA Early Stopping Summary", "⏱️")
+        all_results = results.get_dataframe()
+        early_stopped = len(
+            all_results[all_results["training_iteration"] < args.num_epochs]
+        )
+        completed_full = len(
+            all_results[all_results["training_iteration"] == args.num_epochs]
+        )
+        total_epochs_saved = sum(
+            args.num_epochs - r for r in all_results["training_iteration"]
+        )
+
+        logger.info(
+            f"Trials stopped early: [yellow]{early_stopped}[/yellow] / {len(all_results)}"
+        )
+        logger.info(f"Trials completed full training: [green]{completed_full}[/green]")
+        logger.info(
+            f"Total epochs saved by early stopping: [cyan]{total_epochs_saved}[/cyan]"
+        )
+
+        # Log early stopping stats to MLflow
+        mlflow.log_metrics(
+            {
+                "asha_trials_stopped_early": early_stopped,
+                "asha_trials_completed": completed_full,
+                "asha_epochs_saved": total_epochs_saved,
+            }
+        )
+
         # Get best result
-        log_section("Best Result", "🏆")
-        best_result = results.get_best_result(metric="loss", mode="min")
+        log_section("Best Result (by val_acc)", "🏆")
+        best_result = results.get_best_result(metric="accuracy", mode="max")
+        # Extract trial name from path
+        # Path format: .../train_model_XXXXX_NNNNN_N_batch_size=..._2025-.../
+        # We want: train_model_XXXXX_NNNNN
+        path_basename = os.path.basename(best_result.path)
+        # Split by underscore and take first 4 parts: train_model_XXXXX_NNNNN
+        parts = path_basename.split("_")
+        if len(parts) >= 4 and parts[0] == "train" and parts[1] == "model":
+            best_trial_name = "_".join(parts[:4])  # train_model_XXXXX_NNNNN
+        else:
+            best_trial_name = path_basename
+        logger.info("[dim]Selected trial with highest validation accuracy[/dim]")
+        logger.success(f"Trial: [yellow]{best_trial_name}[/yellow]")
         logger.success(
-            f"Best learning rate: [green]{best_result.config['learning_rate']:.2e}[/green]"
+            f"Learning rate: [green]{best_result.config['learning_rate']:.2e}[/green]"
         )
+        logger.success(f"Batch size: [green]{best_result.config['batch_size']}[/green]")
         logger.success(
-            f"Best batch size: [green]{best_result.config['batch_size']}[/green]"
+            f"Val accuracy: [green]{best_result.metrics.get('accuracy', 0):.4f}[/green]"
         )
-        logger.success(
-            f"Best val loss: [green]{best_result.metrics['loss']:.4f}[/green]"
-        )
-        logger.success(
-            f"Best val accuracy: [green]{best_result.metrics.get('accuracy', 0):.4f}[/green]"
-        )
+        logger.success(f"Val loss: [green]{best_result.metrics['loss']:.4f}[/green]")
+        logger.success(f"Val F1: [green]{best_result.metrics.get('f1', 0):.4f}[/green]")
 
         # Log summary to parent
         mlflow.log_metrics(
@@ -315,13 +497,45 @@ def main():
                         learning_rate=best_result.config["learning_rate"],
                     )
 
+                    # Move model to CPU for logging
+                    model = model.cpu()
+
+                    # Create model signature for transformer model
+                    # Input: input_ids and attention_mask tensors of shape (batch, seq_len)
+                    # Output: logits tensor of shape (batch, num_classes)
+                    input_schema = Schema(
+                        [
+                            TensorSpec(
+                                np.dtype(np.int64),
+                                (-1, TRAINING_CONFIG.max_length),
+                                "input_ids",
+                            ),
+                            TensorSpec(
+                                np.dtype(np.int64),
+                                (-1, TRAINING_CONFIG.max_length),
+                                "attention_mask",
+                            ),
+                        ]
+                    )
+                    output_schema = Schema(
+                        [
+                            TensorSpec(
+                                np.dtype(np.float32), (-1, num_classes), "logits"
+                            ),
+                        ]
+                    )
+                    signature = ModelSignature(
+                        inputs=input_schema, outputs=output_schema
+                    )
+
                     logger.info(
                         f"Registering model as: [cyan]{TRAINING_CONFIG.mlflow_registered_model_name}[/cyan]"
                     )
                     mlflow.pytorch.log_model(
                         pytorch_model=model,
-                        artifact_path="model",
+                        name="model",
                         registered_model_name=TRAINING_CONFIG.mlflow_registered_model_name,
+                        signature=signature,
                     )
 
                     mlflow.log_dict(

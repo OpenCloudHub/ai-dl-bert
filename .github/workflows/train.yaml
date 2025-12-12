@@ -6,62 +6,62 @@ on:
         description: 'DVC Registry tag for data version (e.g "emotion-v0.3.0")'
         required: true
         type: string
-        default: 'emotion-v0.3.0'
+        default: "emotion-v0.3.0"
       training_entrypoint:
-        description: 'Training script entrypoint'
+        description: "Training script entrypoint"
         required: false
         type: string
-        default: 'python src/training/train.py'
+        default: "python src/training/tune.py"
       training_args:
-        description: 'Additional training arguments'
+        description: "Additional training arguments"
         required: false
         type: string
-        default: ''
+        default: ""
       training_image_tag:
-        description: 'Docker image tag used for training(latest, main-abc1234, etc.)'
+        description: "Docker image tag used for training(latest, main-abc1234, etc.)"
         required: false
         type: string
-        default: 'latest'
+        default: "latest"
       serving_image_tag:
-        description: 'Docker image tag used for serving(latest, main-abc1234, etc.)'
+        description: "Docker image tag used for serving(latest, main-abc1234, etc.)"
         required: false
         type: string
-        default: 'latest'
+        default: "latest"
       compute_type:
-        description: 'Compute configuration'
+        description: "Compute configuration"
         required: true
         type: choice
         options:
-          - 'cpu-small'
-          - 'cpu-small-distributed'
-          - 'cpu-medium'
-          - 'cpu-large'
-          - 'gpu-small'
-          - 'gpu-medium'
-          - 'gpu-large'
-        default: 'cpu-small'
+          - "cpu-small"
+          - "cpu-small-distributed"
+          - "cpu-medium"
+          - "cpu-large"
+          - "gpu-small"
+          - "gpu-medium"
+          - "gpu-large"
+        default: "cpu-small"
       approval_mode:
-        description: 'Approval mode'
+        description: "Approval mode"
         required: true
         type: choice
         options:
           - manual
           - automatic
-        default: 'automatic'
+        default: "automatic"
       comparison_metric:
-        description: 'Metric to compare models, mind of pre and suffixes'
+        description: "Metric to compare models, mind of pre and suffixes"
         required: true
         type: string
-        default: 'val_acc'
+        default: "val_acc"
       comparison_higher_is_better:
         description: "Higher metric value is better."
         type: boolean
         default: true
       comparison_threshold:
-        description: 'Minimum improvement threshold (0.05 = 5%)'
+        description: "Minimum improvement threshold (0.05 = 5%)"
         required: true
         type: string
-        default: '0.05'
+        default: "0.05"
 
 jobs:
   train:
